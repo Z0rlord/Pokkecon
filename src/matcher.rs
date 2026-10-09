@@ -39,3 +39,40 @@ pub fn run(signals: &[Signal], standing: &Standing, now: SystemTime) -> Vec<Matc
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn sig(id: u64, who: &str, kind: Kind, cat: Category, cell: &str, exp: SystemTime) -> Signal {
+        Signal { id, who: Handle(who.into()), kind, category: cat, cell: Cell(cell.into()), expires: exp }
+    }
+    fn now() -> SystemTime { SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000) }
+
+    #[test]
+    fn matches_same_cell_and_category_only() {
+        let e = now() + SIGNAL_TTL;
+        let s = vec![
+            sig(1, "ann", Kind::Offer, Category::Carry, "a", e),
+            sig(2, "bo", Kind::Need, Category::Carry, "b", e),
+            sig(3, "cy", Kind::Need, Category::Meal, "a", e),
+        ];
+        assert!(run(&s, &Standing::default(), now()).is_empty());
+    }
+
+    #[test]
+    fn never_matches_self_or_expired_and_uses_offer_once() {
+        let e = now() + SIGNAL_TTL;
+        let s = vec![
+            sig(1, "ann", Kind::Offer, Category::Carry, "a", e),
+            sig(2, "ann", Kind::Need, Category::Carry, "a", e),
+            sig(3, "bo", Kind::Need, Category::Carry, "a", e),
+            sig(4, "cy", Kind::Need, Category::Carry, "a", e),
+            sig(5, "dee", Kind::Offer, Category::Carry, "a", now() - Duration::from_secs(1)),
+        ];
+        let m = run(&s, &Standing::default(), now());
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].need.who, Handle("bo".into()));
+    }
+}
