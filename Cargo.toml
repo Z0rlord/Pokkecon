@@ -1,0 +1,9 @@
+[package]
+name = "pokkecon"
+version = "0.1.0"
+edition = "2021"
+description = "Gift-economy router: matches small offers and needs between nearby strangers, pokes them, records attested acts."
+
+[dependencies]
+# Deliberately empty in the scaffold. Planned: ed25519-dalek (attestation), axum + tokio (relay),
+# rusqlite (store), h3o (geo cells).
