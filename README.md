@@ -38,11 +38,15 @@ observe -> match -> poke -> act -> attest -> standing
 
 ## Stubbed on purpose
 
-- Real signatures (Signer is a toy; swap in ed25519).
 - Network transport (relay, push to phones, Nostr or plain HTTP).
 - Persistence beyond memory.
-- Abuse handling: sybil resistance, collusion rings farming standing.
+- Abuse handling beyond a per-pair cap (no graph-distance weighting, no witnesses, no sybil resistance).
   See OPEN_QUESTIONS.md.
 
-Not compiled yet: written without a Rust toolchain on hand. Run `cargo run`
-and expect to fix small errors.
+Build status: `cargo build` and `cargo run` succeed on Rust 1.99 with two dead-code warnings
+(unused `Category` variants and `Poker::new_day`). The demo prints one match, two pokes and a standing score.
+
+Implemented identity model: a handle is an ed25519 public key derived per day from a device-held
+secret, so handles rotate and are not linkable without the secret. Receipts are signed separately by
+giver and receiver. Not yet done: key storage, handle rotation inside live signals, and any
+protection against a router correlating handles by timing or location cell.
