@@ -56,5 +56,8 @@ storage design). Poke, decline and standing state is per-process for now. The de
 
 Implemented identity model: a handle is an ed25519 public key derived per day from a device-held
 secret, so handles rotate and are not linkable without the secret. Receipts are signed separately by
-giver and receiver. Not yet done: key storage, handle rotation inside live signals, and any
-protection against a router correlating handles by timing or location cell.
+giver and receiver. When the day rolls over, a publisher re-asserts each live signal under the
+new day's handle (`rehandle`); only the secret holder can carry that continuity,
+the router cannot infer it. Receipts signed before the rotation stay valid because
+they verify against the handles bound inside them. Not yet done: real key storage,
+and any protection against a router correlating handles by timing or location cell.
