@@ -1,14 +1,15 @@
+use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 
 /// Rotating pseudonym. The router never learns a real identity.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Handle(pub String);
 
 /// Coarse geo cell id (e.g. an H3 cell at ~1 km). Never raw coordinates.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Cell(pub String);
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Category {
     Carry,
     Lend,
@@ -17,13 +18,13 @@ pub enum Category {
     Repair,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Kind {
     Offer,
     Need,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Signal {
     pub id: u64,
     pub who: Handle,
