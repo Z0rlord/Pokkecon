@@ -23,6 +23,7 @@ fn main() -> io::Result<()> {
         Some("list") => list(),
         Some("match") => show_matches(),
         Some("poke") => show_pokes(),
+        Some("decline") => decline(&args[1..]),
         Some(other) => {
             eprintln!("unknown command: {}", other);
             usage()
@@ -38,12 +39,14 @@ pokkecon need <cat> <cell>    publish a need signal (1h TTL)
 pokkecon list                 show live signals
 pokkecon match                show current matches
 pokkecon poke                 show pokes the matcher would send
+pokkecon decline <oid> <nid>  decline the match for offer <oid> and need <nid>
 
 categories: carry lend guide meal repair
 signals persist in $POKKECON_DIR/signals.jsonl (default ~/.pokkecon/).
-identity: $POKKECON_DIR/identity.key, created on first run - prototype-grade
-key storage, not the final design. Poke, decline and standing state is
-per-process for now; persisting it is an open design question."
+Receipts and poke/decline state persist too (receipts.jsonl, poker.json);
+standing is rebuilt from the receipt log on every run. Identity:
+$POKKECON_DIR/identity.key, created on first run - prototype-grade key
+storage, not the final design."
     );
     Ok(())
 }
@@ -85,6 +88,14 @@ fn store_path() -> PathBuf {
     data_dir().join("signals.jsonl")
 }
 
+fn receipts_path() -> PathBuf {
+    data_dir().join("receipts.jsonl")
+}
+
+fn poker_path() -> PathBuf {
+    data_dir().join("poker.json")
+}
+
 fn publish(kind: Kind, args: &[String]) -> io::Result<()> {
     if args.len() != 2 {
         eprintln!("usage: pokkecon {} <category> <cell>", if kind == Kind::Offer { "offer" } else { "need" });
@@ -123,8 +134,39 @@ fn list() -> io::Result<()> {
 
 fn matched(now: SystemTime) -> io::Result<Vec<matcher::Match>> {
     let store = FileStore::open(store_path())?;
-    // Standing is per-process for now, so every offerer scores zero here.
-    Ok(matcher::run(&store.all(), &Standing::default(), now))
+    // Standing is rebuilt from the device's own receipt log on every run.
+    let receipts = ReceiptStore::open(receipts_path())?;
+    let standing = Standing::from_receipts(receipts.all(), now);
+    Ok(matcher::run(&store.all(), &standing, now))
+}
+
+fn decline(args: &[String]) -> io::Result<()> {
+    if args.len() != 2 {
+        eprintln!("usage: pokkecon decline <offer_id> <need_id>");
+        return usage();
+    }
+    let (oid, nid) = (args[0].parse::<u64>(), args[1].parse::<u64>());
+    let (Ok(oid), Ok(nid)) = (oid, nid) else {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "signal ids must be numbers"));
+    };
+    let now = SystemTime::now();
+    let store = FileStore::open(store_path())?;
+    let all = store.all();
+    let offer = all.iter().find(|s| s.id == oid && s.kind == Kind::Offer && s.live(now));
+    let need = all.iter().find(|s| s.id == nid && s.kind == Kind::Need && s.live(now));
+    let (Some(offer), Some(need)) = (offer, need) else {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "no such live offer/need pair"));
+    };
+    let m = matcher::Match { offer: offer.clone(), need: need.clone() };
+    let me = identity()?.handle(epoch_of(now));
+    let path = poker_path();
+    let mut poker = poke::Poker::load(&path)?;
+    if !poker.decline(&m, &me, now) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "not your match to decline"));
+    }
+    poker.save(&path)?;
+    println!("declined; this pair will not be re-poked for 24h. Standing is untouched.");
+    Ok(())
 }
 
 fn show_matches() -> io::Result<()> {
@@ -141,7 +183,8 @@ fn show_matches() -> io::Result<()> {
 
 fn show_pokes() -> io::Result<()> {
     let now = SystemTime::now();
-    let mut poker = poke::Poker::default();
+    let path = poker_path();
+    let mut poker = poke::Poker::load(&path)?;
     let mut n = 0;
     for m in &matched(now)? {
         for p in poker.poke_at(m, now) {
@@ -149,7 +192,8 @@ fn show_pokes() -> io::Result<()> {
             n += 1;
         }
     }
-    println!("{} poke(s) (rate limits and declines are per-process for now)", n);
+    poker.save(&path)?;
+    println!("{} poke(s)", n);
     Ok(())
 }
 
@@ -187,6 +231,8 @@ fn demo() -> io::Result<()> {
 
     let mut standing = Standing::default();
     let mut poker = poke::Poker::default();
+    let rpath = std::env::temp_dir().join(format!("pokkecon-demo-receipts-{}.jsonl", std::process::id()));
+    let mut rstore = ReceiptStore::open(&rpath)?;
 
     // observe -> match
     let matches = matcher::run(&store.all(), &standing, now);
@@ -202,13 +248,20 @@ fn demo() -> io::Result<()> {
         r.sign_as_giver(&ann, epoch);
         r.sign_as_receiver(&bo, epoch);
         if valid(&r) {
-            if let Err(e) = standing.record(&r, now) {
-                println!("receipt rejected: {:?}", e);
+            match standing.record(&r, now) {
+                Err(e) => println!("receipt rejected: {:?}", e),
+                Ok(()) => rstore.put(r.clone())?,
             }
         }
     }
 
     println!("ann standing: {:.2}", standing.score(&ha, now));
+
+    // Standing is rebuilt from the receipt log on every start; the device's
+    // own score links its handles across rotations, locally and only locally.
+    let rebuilt = Standing::from_receipts(rstore.all(), now);
+    println!("standing rebuilt from log: {:.2}", rebuilt.score(&ha, now));
+    println!("ann own score across rotations: {:.2}", rebuilt.own_score(&ann, now));
 
     // A decline: free for the decliner, and the pair is not re-poked for a cooldown.
     let mut poker2 = poke::Poker::default();
@@ -255,5 +308,6 @@ fn demo() -> io::Result<()> {
     println!("post-rotation receipt valid: {}", valid(&fresh));
 
     std::fs::remove_file(&path).ok();
+    std::fs::remove_file(&rpath).ok();
     Ok(())
 }
