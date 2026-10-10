@@ -1,3 +1,4 @@
+use crate::attest::{valid, Receipt};
 use crate::model::Signal;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -63,6 +64,51 @@ impl Store for FileStore {
     }
 }
 
+/// Receipts persisted as JSON lines, same pattern as FileStore. Only receipts
+/// that fully verify are accepted; anything else fails the put. A corrupt
+/// line fails the whole load instead of silently dropping history.
+pub struct ReceiptStore {
+    path: PathBuf,
+    receipts: Vec<Receipt>,
+}
+
+impl ReceiptStore {
+    pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let mut receipts = Vec::new();
+        if let Ok(f) = File::open(&path) {
+            for line in BufReader::new(f).lines() {
+                let line = line?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let r = serde_json::from_str(&line)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                receipts.push(r);
+            }
+        }
+        Ok(Self { path, receipts })
+    }
+
+    /// Append a receipt. Refuses one that does not verify, so the log never
+    /// accumulates junk a later reload would have to skip.
+    pub fn put(&mut self, r: Receipt) -> std::io::Result<()> {
+        if !valid(&r) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "receipt does not verify"));
+        }
+        let line = serde_json::to_string(&r)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let mut f = OpenOptions::new().create(true).append(true).open(&self.path)?;
+        writeln!(f, "{}", line)?;
+        self.receipts.push(r);
+        Ok(())
+    }
+
+    pub fn all(&self) -> &[Receipt] {
+        &self.receipts
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,6 +144,24 @@ mod tests {
         }
         let s = FileStore::open(&path).unwrap();
         assert_eq!(s.all(), vec![sig(1, "ann"), sig(2, "bo")]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn receipt_store_roundtrips_and_refuses_invalid() {
+        use crate::attest::tests::{id, signed};
+        let path = temp_path("receipts");
+        let r = signed(&id(1), &id(2), SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000), 1);
+        {
+            let mut s = ReceiptStore::open(&path).unwrap();
+            s.put(r.clone()).unwrap();
+            // an unsigned receipt is refused
+            let blank = Receipt::new(id(1).handle(0), id(2).handle(0), Category::Carry, 1, 2, SystemTime::UNIX_EPOCH, 2);
+            assert!(s.put(blank).is_err());
+        }
+        let s = ReceiptStore::open(&path).unwrap();
+        assert_eq!(s.all().len(), 1);
+        assert_eq!(s.all()[0].id(), r.id());
         std::fs::remove_file(&path).ok();
     }
 
