@@ -7,10 +7,168 @@ mod store;
 
 use attest::*;
 use model::*;
+use standing::Standing;
 use store::*;
+use std::io;
+use std::path::PathBuf;
 use std::time::SystemTime;
 
-fn main() -> std::io::Result<()> {
+fn main() -> io::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        None => usage(),
+        Some("demo") => demo(),
+        Some("offer") => publish(Kind::Offer, &args[1..]),
+        Some("need") => publish(Kind::Need, &args[1..]),
+        Some("list") => list(),
+        Some("match") => show_matches(),
+        Some("poke") => show_pokes(),
+        Some(other) => {
+            eprintln!("unknown command: {}", other);
+            usage()
+        }
+    }
+}
+
+fn usage() -> io::Result<()> {
+    println!(
+        "pokkecon demo                 run the end-to-end simulation
+pokkecon offer <cat> <cell>   publish an offer signal (1h TTL)
+pokkecon need <cat> <cell>    publish a need signal (1h TTL)
+pokkecon list                 show live signals
+pokkecon match                show current matches
+pokkecon poke                 show pokes the matcher would send
+
+categories: carry lend guide meal repair
+signals persist in $POKKECON_DIR/signals.jsonl (default ~/.pokkecon/).
+identity: $POKKECON_DIR/identity.key, created on first run - prototype-grade
+key storage, not the final design. Poke, decline and standing state is
+per-process for now; persisting it is an open design question."
+    );
+    Ok(())
+}
+
+fn data_dir() -> PathBuf {
+    match std::env::var("POKKECON_DIR") {
+        Ok(d) => PathBuf::from(d),
+        Err(_) => PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".pokkecon"),
+    }
+}
+
+/// Load the identity secret, creating it on first run. Prototype-grade key
+/// storage: a hex file with owner-only permissions. Rotation, hardware
+/// backing and loss recovery are all undecided; see OPEN_QUESTIONS.md.
+fn identity() -> io::Result<Identity> {
+    let dir = data_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("identity.key");
+    if let Ok(hex) = std::fs::read_to_string(&path) {
+        let bytes = from_hex(hex.trim()).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "identity.key is not 32 hex bytes")
+        })?;
+        return Ok(Identity::from_secret(bytes));
+    }
+    // No rand crate yet; the OS CSPRNG is enough for a prototype secret.
+    let mut secret = [0u8; 32];
+    use std::io::Read;
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut secret)?;
+    std::fs::write(&path, to_hex(&secret))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(Identity::from_secret(secret))
+}
+
+fn store_path() -> PathBuf {
+    data_dir().join("signals.jsonl")
+}
+
+fn publish(kind: Kind, args: &[String]) -> io::Result<()> {
+    if args.len() != 2 {
+        eprintln!("usage: pokkecon {} <category> <cell>", if kind == Kind::Offer { "offer" } else { "need" });
+        return usage();
+    }
+    let category = Category::from_name(&args[0]).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, format!("unknown category: {}", args[0]))
+    })?;
+    let now = SystemTime::now();
+    let me = identity()?.handle(epoch_of(now));
+    let mut store = FileStore::open(store_path())?;
+    let id = store.all().iter().map(|s| s.id).max().unwrap_or(0) + 1;
+    store.put(Signal {
+        id,
+        who: me,
+        kind,
+        category: category.clone(),
+        cell: Cell(args[1].clone()),
+        expires: now + SIGNAL_TTL,
+    })?;
+    println!("published {:?} #{}: {} in {} for 1h", kind, id, category.name(), args[1]);
+    Ok(())
+}
+
+fn list() -> io::Result<()> {
+    let now = SystemTime::now();
+    let store = FileStore::open(store_path())?;
+    let mut n = 0;
+    for s in store.all().iter().filter(|s| s.live(now)) {
+        println!("#{} {:?} {} in {} by {}", s.id, s.kind, s.category.name(), s.cell.0, &s.who.0[..8]);
+        n += 1;
+    }
+    println!("{} live signal(s)", n);
+    Ok(())
+}
+
+fn matched(now: SystemTime) -> io::Result<Vec<matcher::Match>> {
+    let store = FileStore::open(store_path())?;
+    // Standing is per-process for now, so every offerer scores zero here.
+    Ok(matcher::run(&store.all(), &Standing::default(), now))
+}
+
+fn show_matches() -> io::Result<()> {
+    let ms = matched(SystemTime::now())?;
+    for m in &ms {
+        println!(
+            "match: offer #{} ({}) x need #{} ({}) in {}",
+            m.offer.id, &m.offer.who.0[..8], m.need.id, &m.need.who.0[..8], m.offer.cell.0
+        );
+    }
+    println!("{} match(es)", ms.len());
+    Ok(())
+}
+
+fn show_pokes() -> io::Result<()> {
+    let now = SystemTime::now();
+    let mut poker = poke::Poker::default();
+    let mut n = 0;
+    for m in &matched(now)? {
+        for p in poker.poke_at(m, now) {
+            println!("poke {} : {}", &p.to.0[..8], p.text);
+            n += 1;
+        }
+    }
+    println!("{} poke(s) (rate limits and declines are per-process for now)", n);
+    Ok(())
+}
+
+fn to_hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{:02x}", x)).collect()
+}
+
+fn from_hex(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = u8::from_str_radix(s.get(2 * i..2 * i + 2)?, 16).ok()?;
+    }
+    Some(out)
+}
+
+fn demo() -> io::Result<()> {
     let now = SystemTime::now();
     let exp = now + SIGNAL_TTL;
     let cell = Cell("8f2f5a".into());
@@ -27,7 +185,7 @@ fn main() -> std::io::Result<()> {
     store.put(Signal { id: 2, who: hb.clone(), kind: Kind::Need, category: Category::Carry, cell: cell.clone(), expires: exp })?;
     println!("signals persisted to {}", path.display());
 
-    let mut standing = standing::Standing::default();
+    let mut standing = Standing::default();
     let mut poker = poke::Poker::default();
 
     // observe -> match
