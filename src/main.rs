@@ -223,6 +223,37 @@ fn demo() -> io::Result<()> {
     // Reopen: the signals survive the process that wrote them.
     let reread = FileStore::open(&path)?;
     println!("signals after reopen: {}", reread.all().len());
+
+    // The day rolls over: each publisher re-asserts its live signal under the
+    // new day's handle. Only the secret holder can do it; the router cannot
+    // tell yesterday's and today's handles belong to the same person.
+    let next = epoch + 1;
+    let rotated: Vec<Signal> = store
+        .all()
+        .iter()
+        .map(|s| {
+            if s.who == ha {
+                rehandle(s, &ann, next)
+            } else if s.who == hb {
+                rehandle(s, &bo, next)
+            } else {
+                s.clone()
+            }
+        })
+        .collect();
+    println!("signals rehandled for new epoch: {}", rotated.iter().all(|s| s.who != ha && s.who != hb));
+
+    // A receipt mixing epochs (old handle, new key) fails closed; one signed
+    // consistently in the new epoch verifies.
+    let mut stale = Receipt::new(ha.clone(), bo.handle(next), Category::Carry, 1, 2, now, 2);
+    stale.sign_as_giver(&ann, next);
+    stale.sign_as_receiver(&bo, next);
+    println!("cross-epoch receipt rejected: {}", !valid(&stale));
+    let mut fresh = Receipt::new(ann.handle(next), bo.handle(next), Category::Carry, 1, 2, now, 3);
+    fresh.sign_as_giver(&ann, next);
+    fresh.sign_as_receiver(&bo, next);
+    println!("post-rotation receipt valid: {}", valid(&fresh));
+
     std::fs::remove_file(&path).ok();
     Ok(())
 }
