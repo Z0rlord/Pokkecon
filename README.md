@@ -44,7 +44,7 @@ observe -> match -> poke -> act -> attest -> standing
   See OPEN_QUESTIONS.md.
 
 Build status: `cargo build` and `cargo run` succeed on Rust 1.99 with two dead-code warnings
-(unused `Category` variants and `Poker::new_day`). The demo prints one match, two pokes and a standing score.
+(unused `Category` variants and `Poker::new_day`). The demo prints one match, two pokes, a standing score, then a decline that blocks re-poking the pair without touching standing.
 
 Implemented identity model: a handle is an ed25519 public key derived per day from a device-held
 secret, so handles rotate and are not linkable without the secret. Receipts are signed separately by
