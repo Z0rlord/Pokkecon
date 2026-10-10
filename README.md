@@ -42,17 +42,19 @@ observe -> match -> poke -> act -> attest -> standing
 - Abuse handling beyond a per-pair cap (no graph-distance weighting, no witnesses, no sybil resistance).
   See OPEN_QUESTIONS.md.
 
-Build status: `cargo build` and `cargo run` succeed on Rust 1.99 with two dead-code warnings
-(`MemStore` and `Poker::new_day` unused in the binary).
+Build status: `cargo build` and `cargo run` succeed on Rust 1.99 with one dead-code warning
+(`MemStore` unused in the binary).
 
 ## CLI
 
 `pokkecon demo` runs the simulated loop. The other subcommands act on a real
 (per-device) store: `offer <cat> <cell>` and `need <cat> <cell>` publish a
 signal, `list` shows live signals, `match` and `poke` show what the matcher
-would do. Signals persist in ~/.pokkecon/signals.jsonl (POKKECON_DIR overrides)
-and identity in ~/.pokkecon/identity.key (prototype-grade, not the final key
-storage design). Poke, decline and standing state is per-process for now. The demo prints one match, two pokes, a standing score, then a decline that blocks re-poking the pair without touching standing.
+would do, `decline <oid> <nid>` declines a match. Everything persists under
+~/.pokkecon/ (POKKECON_DIR overrides): signals.jsonl, receipts.jsonl,
+poker.json (rate limits and declines), and identity.key (prototype-grade,
+not the final key storage design). Standing is rebuilt from the receipt log
+on every run. The demo prints one match, two pokes, a standing score, then a decline that blocks re-poking the pair without touching standing.
 
 Implemented identity model: a handle is an ed25519 public key derived per day from a device-held
 secret, so handles rotate and are not linkable without the secret. Receipts are signed separately by
@@ -61,3 +63,22 @@ new day's handle (`rehandle`); only the secret holder can carry that continuity,
 the router cannot infer it. Receipts signed before the rotation stay valid because
 they verify against the handles bound inside them. Not yet done: real key storage,
 and any protection against a router correlating handles by timing or location cell.
+
+## The standing vs rotation tradeoff (accepted)
+
+Handles rotate daily so the router cannot link a person across days. Standing
+is only useful if it survives rotation. The accepted resolution: the device
+keeps a local-only link from its own past handles to its master secret
+(`Standing::own_score` derives it on the fly) and rebuilds standing from a
+local receipt log on every start. This re-creates linkability on-device only.
+The link never leaves the device, and everyone else's standing still resets
+at each rotation because nobody else can do that linking. The rejected
+alternative - standing resets daily for everyone, yourself included - guts
+the mechanism: reputation would evaporate at midnight and the matcher would
+have no history to rank offers with.
+
+Consequences kept visible:
+
+- A lost or wiped device loses its standing history with its secret.
+- A stolen secret links the owner's past handles. Recovery and revocation are
+  open questions (see OPEN_QUESTIONS.md).
