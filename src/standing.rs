@@ -1,4 +1,4 @@
-use crate::attest::Receipt;
+use crate::attest::{epoch_of, valid, Identity, Receipt};
 use crate::model::Handle;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime};
@@ -52,6 +52,55 @@ impl Standing {
         self.seen.insert(id);
         self.acts.entry(r.giver.clone()).or_default().push(r.at);
         Ok(())
+    }
+
+    /// Rebuild standing from the device's own receipt log. Entries were fresh
+    /// when the device wrote them, so the age and future-skew checks for NEW
+    /// receipts do not apply here; signature validity, replay and the pair cap
+    /// still do. Receipts that fail are skipped, not fatal: a log line is
+    /// local evidence, and time alone (decay, pair windows) changes what counts.
+    pub fn from_receipts(receipts: &[Receipt], now: SystemTime) -> Standing {
+        let mut s = Standing::default();
+        for r in receipts {
+            if !valid(r) || s.seen.contains(&r.id()) {
+                continue;
+            }
+            let pair = s.pairs.entry((r.giver.clone(), r.receiver.clone())).or_default();
+            pair.retain(|t| r.at.duration_since(*t).unwrap_or_default() <= PAIR_WINDOW);
+            if pair.len() >= PAIR_CAP {
+                continue;
+            }
+            pair.push(r.at);
+            s.seen.insert(r.id());
+            s.acts.entry(r.giver.clone()).or_default().push(r.at);
+        }
+        s
+    }
+
+    /// The local device's own standing across handle rotations. Only the
+    /// holder of the master secret can link its past handles to itself; this
+    /// map never leaves the device. Everyone else's standing still resets at
+    /// each rotation, which is the accepted privacy tradeoff (see README).
+    pub fn own_score(&self, id: &Identity, now: SystemTime) -> f64 {
+        self.acts
+            .iter()
+            .filter(|(h, times)| {
+                times.iter().any(|t| {
+                    let e = epoch_of(*t);
+                    // signing and dating can straddle an epoch boundary
+                    (e.saturating_sub(1)..=e + 1).any(|x| id.handle(x) == **h)
+                })
+            })
+            .map(|(_, times)| {
+                times
+                    .iter()
+                    .map(|t| {
+                        let age = now.duration_since(*t).unwrap_or_default().as_secs_f64();
+                        0.5f64.powf(age / HALF_LIFE.as_secs_f64())
+                    })
+                    .sum::<f64>()
+            })
+            .sum()
     }
 
     pub fn score(&self, who: &Handle, now: SystemTime) -> f64 {
@@ -112,6 +161,43 @@ mod tests {
         let now = t0() + MAX_RECEIPT_AGE + Duration::from_secs(1);
         assert_eq!(s.record(&rc("ann", "bo", t0(), 1), now), Err(Reject::TooOld));
         assert_eq!(s.record(&rc("ann", "bo", now + Duration::from_secs(3600), 2), now), Err(Reject::FromTheFuture));
+    }
+
+    #[test]
+    fn from_receipts_rebuilds_and_skips_bad_entries() {
+        let good = rc("ann", "bo", t0(), 1);
+        let mut tampered = rc("ann", "bo", t0(), 2);
+        tampered.nonce = 99; // breaks both signatures
+        let s = Standing::from_receipts(&[good.clone(), tampered, good], t0()); // dup is a replay
+        assert!((s.score(&h("ann"), t0()) - 1.0).abs() < 1e-9);
+        // age rules for new receipts do not apply to the device's own log
+        let later = t0() + MAX_RECEIPT_AGE + Duration::from_secs(1);
+        let old = rc("ann", "bo", t0(), 7);
+        let s2 = Standing::from_receipts(&[old], later);
+        assert!(s2.score(&h("ann"), later) > 0.0);
+    }
+
+    #[test]
+    fn own_score_links_own_handles_across_epochs() {
+        use crate::attest::tests::id;
+        let ann = id(1);
+        // ann's acts in epochs 0 and 1, bo's act in epoch 0
+        let a0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let e1 = SystemTime::UNIX_EPOCH + Duration::from_secs(crate::attest::EPOCH_SECS + 1000);
+        let r0 = rc("ann", "bo", a0, 1);
+        // signed with epoch-1 handles and keys
+        let mut r1 = Receipt::new(id(1).handle(1), id(2).handle(1), crate::model::Category::Carry, 1, 2, e1, 2);
+        r1.sign_as_giver(&id(1), 1);
+        r1.sign_as_receiver(&id(2), 1);
+        let rb = rc("bo", "ann", a0, 3);
+        let s = Standing::from_receipts(&[r0, r1, rb], e1);
+        let mine = s.own_score(&ann, e1);
+        let e0_only = s.score(&ann.handle(0), e1);
+        let e1_only = s.score(&ann.handle(1), e1);
+        assert!((mine - (e0_only + e1_only)).abs() < 1e-9);
+        assert!(mine > e0_only);
+        // bo cannot link ann's handles; his own_score sees only his own act
+        assert!((s.own_score(&id(2), e1) - s.score(&id(2).handle(0), e1)).abs() < 1e-9);
     }
 
     #[test]
