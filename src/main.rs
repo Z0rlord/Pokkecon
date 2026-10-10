@@ -49,4 +49,14 @@ fn main() {
     }
 
     println!("ann standing: {:.2}", standing.score(&ha, now));
+
+    // A decline: free for the decliner, and the pair is not re-poked for a cooldown.
+    let mut poker2 = poke::Poker::default();
+    if let Some(m) = matcher::run(&store.all(), &standing, now).first() {
+        let before = standing.score(&ha, now);
+        println!("re-poke fires: {}", !poker2.poke_at(m, now).is_empty());
+        poker2.decline(m, &hb, now);
+        println!("re-poke after decline fires: {}", !poker2.poke_at(m, now).is_empty());
+        println!("ann standing unchanged by bo's decline: {}", standing.score(&ha, now) == before);
+    }
 }
