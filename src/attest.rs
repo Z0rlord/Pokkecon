@@ -1,4 +1,5 @@
 use crate::model::{Category, Handle, Signal};
+use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
@@ -71,7 +72,7 @@ pub fn verify(who: &Handle, msg: &[u8], sig: &[u8]) -> bool {
     vk.verify(msg, &sig).is_ok()
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Receipt {
     pub giver: Handle,
     pub receiver: Handle,
