@@ -33,18 +33,17 @@ observe -> match -> poke -> act -> attest -> standing
 - src/standing.rs  decaying standing from attested acts
 - src/poke.rs      assignments, rate limits, decline
 - src/attest.rs    dual-signed receipts, Signer trait (stub)
-- src/store.rs     Store trait + in-memory impl
+- src/store.rs     Store trait + in-memory and JSON-lines file impls
 - src/main.rs      end-to-end simulation of the loop
 
 ## Stubbed on purpose
 
 - Network transport (relay, push to phones, Nostr or plain HTTP).
-- Persistence beyond memory.
 - Abuse handling beyond a per-pair cap (no graph-distance weighting, no witnesses, no sybil resistance).
   See OPEN_QUESTIONS.md.
 
 Build status: `cargo build` and `cargo run` succeed on Rust 1.99 with two dead-code warnings
-(unused `Category` variants and `Poker::new_day`). The demo prints one match, two pokes, a standing score, then a decline that blocks re-poking the pair without touching standing.
+(`MemStore` and `Poker::new_day` unused in the demo). The demo prints one match, two pokes, a standing score, then a decline that blocks re-poking the pair without touching standing.
 
 Implemented identity model: a handle is an ed25519 public key derived per day from a device-held
 secret, so handles rotate and are not linkable without the secret. Receipts are signed separately by
