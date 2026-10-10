@@ -10,7 +10,7 @@ use model::*;
 use store::*;
 use std::time::SystemTime;
 
-fn main() {
+fn main() -> std::io::Result<()> {
     let now = SystemTime::now();
     let exp = now + SIGNAL_TTL;
     let cell = Cell("8f2f5a".into());
@@ -21,9 +21,11 @@ fn main() {
     let bo = Identity::from_secret([2; 32]);
     let (ha, hb) = (ann.handle(epoch), bo.handle(epoch));
 
-    let mut store = MemStore::default();
-    store.put(Signal { id: 1, who: ha.clone(), kind: Kind::Offer, category: Category::Carry, cell: cell.clone(), expires: exp });
-    store.put(Signal { id: 2, who: hb.clone(), kind: Kind::Need, category: Category::Carry, cell: cell.clone(), expires: exp });
+    let path = std::env::temp_dir().join(format!("pokkecon-demo-{}.jsonl", std::process::id()));
+    let mut store = FileStore::open(&path)?;
+    store.put(Signal { id: 1, who: ha.clone(), kind: Kind::Offer, category: Category::Carry, cell: cell.clone(), expires: exp })?;
+    store.put(Signal { id: 2, who: hb.clone(), kind: Kind::Need, category: Category::Carry, cell: cell.clone(), expires: exp })?;
+    println!("signals persisted to {}", path.display());
 
     let mut standing = standing::Standing::default();
     let mut poker = poke::Poker::default();
@@ -59,4 +61,10 @@ fn main() {
         println!("re-poke after decline fires: {}", !poker2.poke_at(m, now).is_empty());
         println!("ann standing unchanged by bo's decline: {}", standing.score(&ha, now) == before);
     }
+
+    // Reopen: the signals survive the process that wrote them.
+    let reread = FileStore::open(&path)?;
+    println!("signals after reopen: {}", reread.all().len());
+    std::fs::remove_file(&path).ok();
+    Ok(())
 }
