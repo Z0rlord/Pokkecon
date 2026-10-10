@@ -40,4 +40,27 @@ impl Signal {
     }
 }
 
+impl Category {
+    pub fn from_name(s: &str) -> Option<Category> {
+        match s {
+            "carry" => Some(Category::Carry),
+            "lend" => Some(Category::Lend),
+            "guide" => Some(Category::Guide),
+            "meal" => Some(Category::Meal),
+            "repair" => Some(Category::Repair),
+            _ => None,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Category::Carry => "carry",
+            Category::Lend => "lend",
+            Category::Guide => "guide",
+            Category::Meal => "meal",
+            Category::Repair => "repair",
+        }
+    }
+}
+
 pub const SIGNAL_TTL: Duration = Duration::from_secs(60 * 60);
