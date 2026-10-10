@@ -1,6 +1,9 @@
+use crate::attest::epoch_of;
 use crate::matcher::Match;
 use crate::model::Handle;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 pub const MAX_POKES_PER_DAY: u32 = 3;
@@ -24,10 +27,29 @@ pub struct Decline {
 
 #[derive(Default)]
 pub struct Poker {
+    // Wall-clock day (seconds since epoch / 86400) the sent counts belong to.
+    // Rolls over automatically on the first poke of a new day.
+    day: u64,
     sent_today: HashMap<Handle, u32>,
     // Latest decline per pair, keyed with the handles sorted so (a, b) and
     // (b, a) are the same entry.
     declines: HashMap<(Handle, Handle), Decline>,
+}
+
+/// On-disk shape. Explicit rather than derived: JSON object keys must be
+/// strings, so the pair-keyed decline map is stored as a list.
+#[derive(Serialize, Deserialize)]
+struct PokerState {
+    day: u64,
+    sent: HashMap<Handle, u32>,
+    declines: Vec<DeclineEntry>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DeclineEntry {
+    a: Handle,
+    b: Handle,
+    at_secs: u64,
 }
 
 fn pair(a: &Handle, b: &Handle) -> (Handle, Handle) {
@@ -49,6 +71,7 @@ impl Poker {
     /// or the pair is inside a decline cooldown. Returns nothing if the match
     /// must not fire, so no one is poked for a dead match.
     pub fn poke_at(&mut self, m: &Match, now: SystemTime) -> Vec<Poke> {
+        self.roll_day(now);
         let (a, b) = (&m.offer.who, &m.need.who);
         if self.on_cooldown(a, b, now) {
             return vec![];
@@ -69,6 +92,7 @@ impl Poker {
     /// part of the match. Only the pair and the time are kept, never who
     /// said no, and nothing is written to standing.
     pub fn decline(&mut self, m: &Match, who: &Handle, now: SystemTime) -> bool {
+        self.roll_day(now);
         if *who != m.offer.who && *who != m.need.who {
             return false;
         }
@@ -85,8 +109,57 @@ impl Poker {
         }
     }
 
-    pub fn new_day(&mut self) {
-        self.sent_today.clear();
+    fn roll_day(&mut self, now: SystemTime) {
+        let d = epoch_of(now);
+        if d != self.day {
+            self.day = d;
+            self.sent_today.clear();
+        }
+    }
+
+    /// Persist rate-limit and decline state. Written atomically (temp file +
+    /// rename) so a crash mid-write cannot leave half a file.
+    pub fn save(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
+        let st = PokerState {
+            day: self.day,
+            sent: self.sent_today.clone(),
+            declines: self
+                .declines
+                .iter()
+                .map(|((a, b), d)| DeclineEntry {
+                    a: a.clone(),
+                    b: b.clone(),
+                    at_secs: d.at.duration_since(SystemTime::UNIX_EPOCH).map(|x| x.as_secs()).unwrap_or(0),
+                })
+                .collect(),
+        };
+        let text = serde_json::to_string(&st)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let tmp = path.as_ref().with_extension("tmp");
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    /// Load persisted state. A missing file is a fresh start; a corrupt file
+    /// fails closed rather than silently resetting someone's rate limits.
+    pub fn load(path: impl AsRef<Path>) -> std::io::Result<Poker> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Poker::default()),
+            Err(e) => return Err(e),
+        };
+        let st: PokerState = serde_json::from_str(&text)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        Ok(Poker {
+            day: st.day,
+            sent_today: st.sent,
+            declines: st
+                .declines
+                .into_iter()
+                .map(|e| (pair(&e.a, &e.b), Decline { at: SystemTime::UNIX_EPOCH + Duration::from_secs(e.at_secs) }))
+                .collect(),
+        })
     }
 }
 
@@ -158,6 +231,50 @@ mod tests {
         let m = a_match("ann", "bo");
         assert!(!p.decline(&m, &Handle("cy".into()), t0()));
         assert_eq!(p.poke_at(&m, t0()).len(), 2);
+    }
+
+    #[test]
+    fn state_roundtrips_through_disk() {
+        let path = std::env::temp_dir().join(format!("pokkecon-poker-test-{}.json", std::process::id()));
+        let mut p = Poker::default();
+        let m = a_match("ann", "bo");
+        p.poke_at(&m, t0());
+        p.decline(&m, &Handle("bo".into()), t0());
+        p.save(&path).unwrap();
+
+        let q = Poker::load(&path).unwrap();
+        // rate limit carried over: one of the day's three pokes is spent
+        assert_eq!(q.sent_today.get(&Handle("ann".into())), Some(&1));
+        // decline carried over
+        assert!(q.on_cooldown(&Handle("ann".into()), &Handle("bo".into()), t0()));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn corrupt_state_fails_closed_and_missing_file_is_fresh() {
+        let path = std::env::temp_dir().join(format!("pokkecon-poker-corrupt-{}.json", std::process::id()));
+        std::fs::write(&path, "not json").unwrap();
+        assert!(Poker::load(&path).is_err());
+        std::fs::remove_file(&path).ok();
+        let missing = std::env::temp_dir().join(format!("pokkecon-poker-missing-{}.json", std::process::id()));
+        assert!(Poker::load(&missing).is_ok());
+    }
+
+    #[test]
+    fn day_rollover_clears_rate_limits_but_keeps_declines() {
+        let mut p = Poker::default();
+        let m = a_match("ann", "bo");
+        p.decline(&m, &Handle("bo".into()), t0());
+        for _ in 0..MAX_POKES_PER_DAY {
+            p.sent_today.insert(Handle("cy".into()), MAX_POKES_PER_DAY);
+        }
+        let next_day = t0() + Duration::from_secs(60 * 60 * 24);
+        // cy is capped today; after rollover the cap is gone
+        let m2 = a_match("cy", "dee");
+        assert!(p.poke_at(&m2, t0()).is_empty());
+        assert_eq!(p.poke_at(&m2, next_day).len(), 2);
+        // ann x bo declined exactly one cooldown ago: it expires on the same boundary
+        assert!(!p.on_cooldown(&Handle("ann".into()), &Handle("bo".into()), next_day));
     }
 
     #[test]
