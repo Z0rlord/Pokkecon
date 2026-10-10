@@ -1,4 +1,4 @@
-use crate::model::{Category, Handle};
+use crate::model::{Category, Handle, Signal};
 use std::time::SystemTime;
 
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
@@ -39,6 +39,17 @@ impl Identity {
     pub fn sign(&self, epoch: u64, msg: &[u8]) -> Vec<u8> {
         self.key(epoch).sign(msg).to_bytes().to_vec()
     }
+}
+
+/// Re-publish a live signal under the publisher's handle for `epoch`.
+/// Only the holder of the secret can do this. To the router the result is
+/// indistinguishable from a new signal, which is the point: continuity across
+/// day boundaries is carried by the publisher, never inferable by anyone else.
+/// The signal id is kept: it is the same intent, re-asserted. Receipts made
+/// before the rotation stay valid because they verify against the handles
+/// bound inside them, not against any current signal.
+pub fn rehandle(s: &Signal, id: &Identity, epoch: u64) -> Signal {
+    Signal { who: id.handle(epoch), ..s.clone() }
 }
 
 /// Anyone can verify: a handle is the public key. Fails closed on any malformed input.
@@ -171,5 +182,47 @@ pub mod tests {
         assert_ne!(a.handle(0), a.handle(1));
         assert_eq!(a.handle(5), a.handle(5));
         assert_ne!(id(1).handle(0), id(2).handle(0));
+    }
+
+    fn signal(id_no: u64, who: Handle) -> Signal {
+        use crate::model::{Cell, Kind};
+        Signal {
+            id: id_no,
+            who,
+            kind: Kind::Offer,
+            category: Category::Carry,
+            cell: Cell("a".into()),
+            expires: SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000),
+        }
+    }
+
+    #[test]
+    fn rehandle_rotates_only_the_handle() {
+        let a = id(1);
+        let s = signal(7, a.handle(0));
+        let r = rehandle(&s, &a, 1);
+        assert_eq!(r.id, 7);
+        assert_eq!(r.who, a.handle(1));
+        assert_ne!(r.who, s.who);
+        assert_eq!(r.cell, s.cell);
+        assert_eq!(r.expires, s.expires);
+        // Someone else's secret cannot carry the signal into a new epoch.
+        assert_ne!(rehandle(&s, &id(2), 1).who, a.handle(1));
+    }
+
+    #[test]
+    fn cross_epoch_receipt_fails_closed() {
+        let (g, r) = (id(1), id(2));
+        // Giver handle from epoch 0 but signed with the epoch-1 key:
+        // the public key no longer matches the signing key.
+        let mut x = Receipt::new(g.handle(0), r.handle(1), Category::Carry, 1, 2, SystemTime::UNIX_EPOCH + Duration::from_secs(1000), 1);
+        x.sign_as_giver(&g, 1);
+        x.sign_as_receiver(&r, 1);
+        assert!(!valid(&x));
+        // Both sides consistent in epoch 1: valid.
+        let mut y = Receipt::new(g.handle(1), r.handle(1), Category::Carry, 1, 2, SystemTime::UNIX_EPOCH + Duration::from_secs(1000), 1);
+        y.sign_as_giver(&g, 1);
+        y.sign_as_receiver(&r, 1);
+        assert!(valid(&y));
     }
 }
