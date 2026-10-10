@@ -9,3 +9,9 @@
 4. Safety: meeting strangers. Public places only by default, an opt-out per category, a block list.
 5. Legal: gift framing, liability for in-person acts, data minimisation.
 6. Cold start: needs a dense local pool. Start in one neighborhood or one community.
+7. Secret loss and theft: standing and identity live in one device secret.
+   Loss erases standing history; theft links the owner's past handles. Key
+   backup, recovery and revocation are undesigned.
+8. Standing vs rotation is resolved (local-only link, see README). Open: does
+   anyone else ever need to verify a standing claim across rotations, e.g. a
+   witness weighting per question 1, without re-linking handles?
