@@ -34,7 +34,7 @@ observe -> match -> poke -> act -> attest -> standing
 - src/poke.rs      assignments, rate limits, decline
 - src/attest.rs    dual-signed receipts, Signer trait (stub)
 - src/store.rs     Store trait + in-memory and JSON-lines file impls
-- src/main.rs      end-to-end simulation of the loop
+- src/main.rs      CLI entry point (offer/need/list/match/poke) plus the simulation (`pokkecon demo`)
 
 ## Stubbed on purpose
 
@@ -43,7 +43,16 @@ observe -> match -> poke -> act -> attest -> standing
   See OPEN_QUESTIONS.md.
 
 Build status: `cargo build` and `cargo run` succeed on Rust 1.99 with two dead-code warnings
-(`MemStore` and `Poker::new_day` unused in the demo). The demo prints one match, two pokes, a standing score, then a decline that blocks re-poking the pair without touching standing.
+(`MemStore` and `Poker::new_day` unused in the binary).
+
+## CLI
+
+`pokkecon demo` runs the simulated loop. The other subcommands act on a real
+(per-device) store: `offer <cat> <cell>` and `need <cat> <cell>` publish a
+signal, `list` shows live signals, `match` and `poke` show what the matcher
+would do. Signals persist in ~/.pokkecon/signals.jsonl (POKKECON_DIR overrides)
+and identity in ~/.pokkecon/identity.key (prototype-grade, not the final key
+storage design). Poke, decline and standing state is per-process for now. The demo prints one match, two pokes, a standing score, then a decline that blocks re-poking the pair without touching standing.
 
 Implemented identity model: a handle is an ed25519 public key derived per day from a device-held
 secret, so handles rotate and are not linkable without the secret. Receipts are signed separately by
