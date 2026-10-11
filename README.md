@@ -14,8 +14,12 @@ observe -> match -> poke -> act -> attest -> standing
 3. Poke: each side gets one small, declinable assignment. A decline costs nothing.
 4. Act: the stranger does the thing.
 5. Attest: both parties sign a receipt. One-sided claims do not count.
-6. Standing: attested acts raise a local standing score. Standing steers who is
-   poked first. It is never shown as a leaderboard and never spent.
+6. Standing: attested acts raise a local standing score. Each act is weighted by
+   the attester's own standing at the time (base 0.25 so new users can start,
+   bonus capped at 0.75 so no whale dominates), decays with age, and is capped
+   per counterparty per week. A collusion ring of fresh phones can only vouch
+   at base weight and grows slowly. Standing steers who is poked first. It is
+   never shown as a leaderboard and never spent.
 
 ## Design rules (the part that makes it Maneki Neko and not a marketplace)
 
@@ -39,8 +43,8 @@ observe -> match -> poke -> act -> attest -> standing
 ## Stubbed on purpose
 
 - Network transport (relay, push to phones, Nostr or plain HTTP).
-- Abuse handling beyond a per-pair cap (no graph-distance weighting, no witnesses, no sybil resistance).
-  See OPEN_QUESTIONS.md.
+- Abuse handling beyond attester-weighted standing and a per-pair cap (no witnesses yet, no
+  graph-distance weighting). See OPEN_QUESTIONS.md.
 
 Build status: `cargo build` and `cargo run` succeed on Rust 1.99 with one dead-code warning
 (`MemStore` unused in the binary).
