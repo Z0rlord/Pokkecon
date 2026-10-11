@@ -1,8 +1,9 @@
 # Open questions
 
 1. Sybil and collusion: two phones trading fake attestations farm standing.
-   Candidates: weight attestations by the attester's own standing and by graph
-   distance; cap standing gain per counterparty per week; require a third-party witness for high-value acts.
+   Done: per-pair weekly cap, attestation weighted by the attester's standing
+   (base + capped bonus). Open: graph-distance weighting (needs a trust graph
+   that does not yet exist), a third-party witness for high-value acts.
 2. Who runs the router? One operator (simple, a point of control) or many
    federated relays (closer to the story, harder to build).
 3. What is an "act"? Keep the catalog small and physical: carry, lend, guide, share a meal, small repair.
