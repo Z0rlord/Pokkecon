@@ -8,6 +8,29 @@ use sha2::{Digest, Sha256};
 /// Seconds per pseudonym epoch. A new handle (and key) every day.
 pub const EPOCH_SECS: u64 = 60 * 60 * 24;
 
+/// Signature algorithms the verifier understands. Today exactly one. The enum
+/// makes the coupling explicit so a second algorithm lands as a new variant
+/// plus a domain-separator bump, not a rewrite of identity or receipts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Algorithm {
+    Ed25519,
+}
+
+/// The only signing algorithm in use. Handles today are raw ed25519 public
+/// keys; see the note on `verify` for what a second algorithm requires.
+pub const CURRENT_ALGORITHM: Algorithm = Algorithm::Ed25519;
+
+impl Algorithm {
+    /// Domain separator for epoch key derivation. Versioned per algorithm:
+    /// a new algorithm gets the next tag, so handles from earlier epochs stay
+    /// derivable from the same master secret.
+    pub fn domain(&self) -> &'static [u8] {
+        match self {
+            Algorithm::Ed25519 => b"pokkecon/epoch-key/v1",
+        }
+    }
+}
+
 pub fn epoch_of(t: SystemTime) -> u64 {
     t.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) / EPOCH_SECS
 }
@@ -25,7 +48,7 @@ impl Identity {
 
     fn key(&self, epoch: u64) -> SigningKey {
         let mut h = Sha256::new();
-        h.update(b"pokkecon/epoch-key/v1");
+        h.update(CURRENT_ALGORITHM.domain());
         h.update(self.master);
         h.update(epoch.to_be_bytes());
         SigningKey::from_bytes(&h.finalize().into())
@@ -54,22 +77,36 @@ pub fn rehandle(s: &Signal, id: &Identity, epoch: u64) -> Signal {
 }
 
 /// Anyone can verify: a handle is the public key. Fails closed on any malformed input.
+/// Handles carry no algorithm tag: every handle in the wild is ed25519, so
+/// treating them as ed25519 is exact, not a guess. When a second algorithm is
+/// ever added, handles must become self-describing (e.g. "ed25519:<hex>") and
+/// this function gains a legacy branch for raw-hex handles; that is a
+/// deliberate future change, not something to stumble into.
 pub fn verify(who: &Handle, msg: &[u8], sig: &[u8]) -> bool {
-    let hex = who.0.as_bytes();
-    if hex.len() != 64 {
-        return false;
-    }
-    let mut pk = [0u8; 32];
-    for (i, c) in hex.chunks(2).enumerate() {
-        match std::str::from_utf8(c).ok().and_then(|x| u8::from_str_radix(x, 16).ok()) {
-            Some(b) => pk[i] = b,
-            None => return false,
+    verify_as(CURRENT_ALGORITHM, who, msg, sig)
+}
+
+/// Verify under an explicit algorithm.
+pub fn verify_as(alg: Algorithm, who: &Handle, msg: &[u8], sig: &[u8]) -> bool {
+    match alg {
+        Algorithm::Ed25519 => {
+            let hex = who.0.as_bytes();
+            if hex.len() != 64 {
+                return false;
+            }
+            let mut pk = [0u8; 32];
+            for (i, c) in hex.chunks(2).enumerate() {
+                match std::str::from_utf8(c).ok().and_then(|x| u8::from_str_radix(x, 16).ok()) {
+                    Some(b) => pk[i] = b,
+                    None => return false,
+                }
+            }
+            let (Ok(vk), Ok(sig)) = (VerifyingKey::from_bytes(&pk), Signature::from_slice(sig)) else {
+                return false;
+            };
+            vk.verify(msg, &sig).is_ok()
         }
     }
-    let (Ok(vk), Ok(sig)) = (VerifyingKey::from_bytes(&pk), Signature::from_slice(sig)) else {
-        return false;
-    };
-    vk.verify(msg, &sig).is_ok()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -175,6 +212,26 @@ pub mod tests {
         let mut r = mk(1); r.sign_as_receiver(&id(3), 0); assert!(!valid(&r));
         // a handle that is not a public key
         let mut r = mk(1); r.giver = Handle("ann".into()); assert!(!valid(&r));
+    }
+
+    #[test]
+    fn handle_derivation_is_pinned() {
+        // Known-answer pins: if these change, every stored handle, receipt,
+        // signal and standing entry in the wild changes with them. A failing
+        // pin means a silent identity-format break, not a refactor.
+        let a = id(1);
+        assert_eq!(a.handle(0).0, "96b27a7d69176c0b6ab7f4ceab720010eb87598c96c494caea6378f44f85acd6");
+        assert_eq!(a.handle(1).0, "74c9ce3ff5b29558a16e627a30647fcbc258c49ab46b76d9f646de408b2266cd");
+        assert_eq!(Algorithm::Ed25519.domain(), b"pokkecon/epoch-key/v1");
+    }
+
+    #[test]
+    fn verify_as_matches_verify_for_current_algorithm() {
+        let a = id(1);
+        let msg = b"pokkecon";
+        let sig = a.sign(0, msg);
+        assert_eq!(verify(&a.handle(0), msg, &sig), verify_as(CURRENT_ALGORITHM, &a.handle(0), msg, &sig));
+        assert!(verify_as(Algorithm::Ed25519, &a.handle(0), msg, &sig));
     }
 
     #[test]
