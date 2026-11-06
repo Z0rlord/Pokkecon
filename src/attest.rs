@@ -54,6 +54,18 @@ impl Identity {
         SigningKey::from_bytes(&h.finalize().into())
     }
 
+    /// Derive a 32-byte epoch secret under an arbitrary domain separator.
+    /// Crate-internal: the master itself never leaves this module;
+    /// callers get only the per-domain, per-epoch derivative (same shape
+    /// as the handle key derivation in key()).
+    pub(crate) fn derive_epoch_secret(&self, domain: &[u8], epoch: u64) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(domain);
+        h.update(self.master);
+        h.update(epoch.to_be_bytes());
+        h.finalize().into()
+    }
+
     /// The pseudonym for an epoch: the hex of that epoch's ed25519 public key.
     pub fn handle(&self, epoch: u64) -> Handle {
         let pk = self.key(epoch).verifying_key().to_bytes();
@@ -66,12 +78,18 @@ impl Identity {
 }
 
 /// Re-publish a live signal under the publisher's handle for `epoch`.
-/// Only the holder of the secret can do this. To the router the result is
-/// indistinguishable from a new signal, which is the point: continuity across
-/// day boundaries is carried by the publisher, never inferable by anyone else.
-/// The signal id is kept: it is the same intent, re-asserted. Receipts made
-/// before the rotation stay valid because they verify against the handles
-/// bound inside them, not against any current signal.
+/// Only the holder of the secret can do this. The signal id is kept: it is
+/// the same intent, re-asserted, and receipt/match state stays lined up.
+/// Receipts made before the rotation stay valid because they verify against
+/// the handles bound inside them, not against any current signal.
+///
+/// Privacy note (corrected 2026-11-05): keeping the id means continuity is
+/// OBSERVABLE, not hidden - anyone who recorded the same signal id under
+/// last epoch's handle can link the two handles. Rotation still prevents
+/// deriving one handle from another, but it does not erase this correlation
+/// channel. If re-asserting an intent should be unlinkable, mint a fresh id
+/// instead; that behavior choice is deliberately left for review rather
+/// than changed silently here.
 pub fn rehandle(s: &Signal, id: &Identity, epoch: u64) -> Signal {
     Signal { who: id.handle(epoch), ..s.clone() }
 }

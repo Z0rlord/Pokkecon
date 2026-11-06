@@ -1,6 +1,10 @@
 mod attest;
 mod matcher;
 mod model;
+mod nostr;
+mod relay;
+mod nostr_vectors;
+mod transport;
 mod poke;
 mod standing;
 mod store;

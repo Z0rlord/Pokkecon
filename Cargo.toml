@@ -7,6 +7,8 @@ description = "Gift-economy router: matches small offers and needs between nearb
 [dependencies]
 ed25519-dalek = "2"
 sha2 = "0.10"
-# Planned, not added: a relay/transport crate, geo cells. Transport is undecided.
+# Transport: Nostr (selected 2026-11-05). Wire layer nostr.rs, relay relay.rs, adapter transport.rs. Geo cells still planned.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+nostr_rs = { package = "nostr", version = "0.45", default-features = false, features = ["std", "os-rng", "nip44", "nip59"] }

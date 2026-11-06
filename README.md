@@ -28,6 +28,8 @@ observe -> match -> poke -> act -> attest -> standing
 - Pokes are rate limited per person per day. Declining is free and invisible to the other side.
 - Standing decays. Old favors do not buy permanent privilege.
 - The router sees signals, not identities. Handles are rotating pseudonyms.
+- Funding is not favors: a Cashu ecash funding edge (bounties, public goods)
+  is in design only; no favor ever carries money. See docs/funding-edge.md.
 - Fail closed: no valid signature, no scope, no match.
 
 ## Layout
@@ -36,18 +38,53 @@ observe -> match -> poke -> act -> attest -> standing
 - src/matcher.rs   complementary-signal pairing
 - src/standing.rs  decaying standing from attested acts
 - src/poke.rs      assignments, rate limits, decline
-- src/attest.rs    dual-signed receipts, Signer trait (stub)
+- src/attest.rs    dual-signed receipts, rotating handles
+- src/nostr.rs     Nostr wire layer: events, NIP-44 encryption, NIP-59 gift wrap (crypto via the rust-nostr crate)
+- src/relay.rs     relay protocol, sync client, local test relay
+- src/transport.rs handles <-> Nostr transport keys, signal/poke packaging
+- src/nostr_vectors.rs  official NIP-44 vector and interop regression tests
 - src/store.rs     Store trait + in-memory and JSON-lines file impls
 - src/main.rs      CLI entry point (offer/need/list/match/poke) plus the simulation (`pokkecon demo`)
 
 ## Stubbed on purpose
 
-- Network transport (relay, push to phones, Nostr or plain HTTP).
+- Push delivery to phones and any relay deployment.
 - Abuse handling beyond attester-weighted standing and a per-pair cap (no witnesses yet, no
   graph-distance weighting). See OPEN_QUESTIONS.md.
 
-Build status: `cargo build` and `cargo run` succeed on Rust 1.99 with one dead-code warning
-(`MemStore` unused in the binary).
+Build status: `cargo build`, `cargo test` (48 tests) and `cargo run` succeed on Rust 1.99.
+
+## Transport: Nostr (in progress)
+
+What exists today:
+
+- Signals are packaged as ephemeral Nostr events (kind 20001) that relays are
+  not expected to store, matching the 1-hour TTL. A NIP-40 expiration tag
+  mirrors the TTL; enforcement stays local.
+- Pokes and receipts travel as NIP-59 gift-wrapped private messages: the outer
+  event is a one-time key, so a relay sees the recipient and a time window,
+  not the sender.
+- Each device derives a secp256k1 transport key per day from the same secret
+  as its handles. Every signal and poke carries a signature proving the
+  transport key belongs to the claimed handle for that day, so counterparties
+  verify senders without a central registry.
+- The relay protocol, a synchronous client and a local test relay are
+  included. All tests run against a loopback relay; no public relay is
+  contacted and no deployment exists.
+
+Honest limits:
+
+- Who may read signals is an open product decision: open ephemeral signals
+  that any client can match, or signals encrypted to a matcher key. Nothing
+  is broadcast today either way.
+- Cryptography is delegated to the rust-nostr crate (v0.45.6), which passes
+  the protocol's official test vectors in this repo's test suite. No
+  independent security audit covering this crate version has been verified;
+  the 2023 Cure53 audit covered the NIP-44 spec and different reference
+  implementations.
+- Daily rotation alone does not make a person unlinkable across days:
+  republished signals keep their id, receipts name both parties, and
+  same-place same-time patterns at day rollover can correlate.
 
 ## CLI
 
@@ -61,10 +98,12 @@ not the final key storage design). Standing is rebuilt from the receipt log
 on every run. The demo prints one match, two pokes, a standing score, then a decline that blocks re-poking the pair without touching standing.
 
 Implemented identity model: a handle is an ed25519 public key derived per day from a device-held
-secret, so handles rotate and are not linkable without the secret. Receipts are signed separately by
+secret, so handles rotate and one day's handle cannot be derived from another without the secret. Receipts are signed separately by
 giver and receiver. When the day rolls over, a publisher re-asserts each live signal under the
-new day's handle (`rehandle`); only the secret holder can carry that continuity,
-the router cannot infer it. Receipts signed before the rotation stay valid because
+new day's handle (`rehandle`). Only the secret holder can do this - but the
+re-asserted signal keeps its id, so an observer who recorded it under last
+day's handle can link the two. Rotation prevents deriving one handle from
+another; it does not erase that correlation channel. Receipts signed before the rotation stay valid because
 they verify against the handles bound inside them. Not yet done: real key storage,
 and any protection against a router correlating handles by timing or location cell.
 
